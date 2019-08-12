@@ -1,6 +1,12 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import torch.nn as nn
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader, SequentialSampler, Subset
 
 def plot_var_forc(prior, forc, err_upper, err_lower,
                   index=None, names=None, plot_stderr=True,
@@ -102,10 +108,20 @@ class RidgeAR:
         return fitted_val
 
 
+def which_fluc(data: pd.DataFrame, value: float):
+    for series in data:
+        col = data[series]
+        for data in col:
+            if data < -value or data > value:
+                print(col.describe())
+                break
+
+
 def get_lags(X, lags):
     X_lagged = pd.DataFrame()
 
-    for i in range(lags):
+    # wow, there was a bug here...
+    for i in range(1, lags + 1):
         temp = X.shift(i)
         X_lagged = pd.concat([X_lagged, temp], axis=1)
 
@@ -132,7 +148,6 @@ def ridge_ar(y, X, lags):
 
 
 def kernel_ridge_ar(y, X, lags, kernel):
-    assert isinstance(X, pd.DataFrame), "X has to be of type pd.DataFrame"
 
     X_lagged = get_lags(X, lags)
 
@@ -148,4 +163,134 @@ def kernel_ridge_ar(y, X, lags, kernel):
     print("Fitting regression...")
 
     return kernel_ridge(y, X_lagged, kernel)
+    
+def is_outlier(points, thresh=3.5):
+    # https://stackoverflow.com/questions/11882393/matplotlib-disregard-outliers-when-plotting
+
+    """
+    Returns a boolean array with True if points are outliers and False 
+    otherwise.
+
+    Parameters:
+    -----------
+        points : An numobservations by numdimensions array of observations
+        thresh : The modified z-score to use as a threshold. Observations with
+            a modified z-score (based on the median absolute deviation) greater
+            than this value will be classified as outliers.
+
+    Returns:
+    --------
+        mask : A numobservations-length boolean array.
+
+    References:
+    ----------
+        Boris Iglewicz and David Hoaglin (1993), "Volume 16: How to Detect and
+        Handle Outliers", The ASQC Basic References in Quality Control:
+        Statistical Techniques, Edward F. Mykytka, Ph.D., Editor. 
+    """
+    if len(points.shape) == 1:
+        points = points[:,None]
+    median = np.median(points, axis=0)
+    diff = np.sum((points - median)**2, axis=-1)
+    diff = np.sqrt(diff)
+    med_abs_deviation = np.median(diff)
+
+    modified_z_score = 0.6745 * diff / med_abs_deviation
+
+    return modified_z_score > thresh
+
+
+def evaluate_model(net: nn.Module, val_loader: DataLoader, criterion: nn.MSELoss):
+    net.eval()
+    val_loss = 0
+    for i, data in enumerate(val_loader):
+        with torch.no_grad():
+            y, X = data
+            y, X = y.float(), X.float()
+            y_pred = net(X)
+            loss = criterion(y, y_pred)
+            val_loss += loss.item()
+    avg_val_loss = val_loss / len(val_loader)
+    return avg_val_loss
+
+
+def train_one_epoch(net: nn.Module, train_loader: DataLoader, criterion: nn.MSELoss, optimizer: optim):
+    net.train()
+    epoch_loss = 0
+    for i, data in enumerate(train_loader):
+        
+        y, X = data
+        y, X = y.float(), X.float()
+        
+        optimizer.zero_grad()
+        
+        y_pred = net(X)
+        loss = criterion(y, y_pred)
+        loss.backward()
+        optimizer.step()
+        
+        epoch_loss += loss.item()
+        
+    avg_train_loss = epoch_loss / len(train_loader)
+    return avg_train_loss
+    
+
+def get_average(losses: list):
+    total = 0
+    for i in losses:
+        total += i
+    return total/len(losses)
+
+
+
+# early stopping implementation
+# inspired by https://gist.github.com/stefanonardo/693d96ceb2f531fa05db530f3e21517d
+
+def train_window(net: nn.Module, criterion: nn.MSELoss, optimizer: optim, window):
+    running_val_loss = []
+    prev_val_loss = 1000000  # very big number
+    cnt = 0
+    patience = 10
+    ma = 5
+    
+    for epoch in range(5000):
+            
+        train_loss = train_one_epoch(net, window.trainloader, criterion, optimizer)
+        val_loss = evaluate_model(net, window.validationloader, criterion)
+        running_val_loss.append(val_loss)
+        
+        if epoch % 5 == 0:
+            print("[epoch: %d] train loss: %.3f, val loss: %.3f"
+                  % (epoch + 1, train_loss, val_loss))
+        
+        avg_val_loss = get_average(running_val_loss)
+    
+        if avg_val_loss > prev_val_loss:
+            if cnt > patience:
+                break
+            else:
+                cnt += 1
+        else:
+            cnt = 0  # reset
+            
+        prev_val_loss = avg_val_loss
+        
+        # restrict to moving average
+        while len(running_val_loss) > ma:
+            running_val_loss.pop(0)
+
+        # manual training stopper
+        if epoch % 500 == 0 and epoch != 0:
+            cnt_train = input("Continue training? True or False")
+            if cnt_train != True:
+                break
+                
+    print("Finished window")
+
+
+class Window:
+
+    def __init__(self, trainloader, validationloader):
+        self.trainloader = trainloader
+        self.validationloader = validationloader
     
