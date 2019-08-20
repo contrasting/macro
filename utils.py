@@ -241,51 +241,57 @@ def get_average(losses: list):
         total += i
     return total/len(losses)
 
+class TrainHelper:
+    def __init__(self, patience = 10, ma = 5, print_every = 5, percent = 0.9, manual = 500):
+        self.patience = patience
+        self.ma = ma
+        self.print_every = print_every
+        self.percent = percent
+        self.manual = manual
 
+    # early stopping implementation
+    # inspired by https://gist.github.com/stefanonardo/693d96ceb2f531fa05db530f3e21517d
 
-# early stopping implementation
-# inspired by https://gist.github.com/stefanonardo/693d96ceb2f531fa05db530f3e21517d
-
-def train_window(net: nn.Module, criterion: nn.MSELoss, optimizer: optim, window):
-    running_val_loss = []
-    prev_val_loss = 1000000  # very big number
-    cnt = 0
-    patience = 10
-    ma = 5
-    
-    for epoch in range(5000):
-            
-        train_loss = train_one_epoch(net, window.trainloader, criterion, optimizer)
-        val_loss = evaluate_model(net, window.validationloader, criterion)
-        running_val_loss.append(val_loss)
+    def train_window(self, net: nn.Module, criterion: nn.MSELoss, optimizer: optim, window):
+        running_val_loss = []
+        prev_val_loss = 1000000  # very big number
+        cnt = 0
         
-        if epoch % 5 == 0:
-            print("[epoch: %d] train loss: %.3f, val loss: %.3f"
-                  % (epoch + 1, train_loss, val_loss))
-        
-        avg_val_loss = get_average(running_val_loss)
-    
-        if avg_val_loss > prev_val_loss:
-            if cnt > patience:
-                break
-            else:
-                cnt += 1
-        else:
-            cnt = 0  # reset
-            
-        prev_val_loss = avg_val_loss
-        
-        # restrict to moving average
-        while len(running_val_loss) > ma:
-            running_val_loss.pop(0)
-
-        # manual training stopper
-        if epoch % 500 == 0 and epoch != 0:
-            cnt_train = input("Continue training? True or False")
-            if cnt_train != True:
-                break
+        for epoch in range(5000):
                 
-    print("Finished window")
+            train_loss = train_one_epoch(net, window.trainloader, criterion, optimizer)
+            val_loss = evaluate_model(net, window.validationloader, criterion)
+            running_val_loss.append(val_loss)
+            
+            if epoch % self.print_every == 0:
+                print("[epoch: %d] train loss: %.3f, val loss: %.3f"
+                        % (epoch + 1, train_loss, val_loss))
+            
+            avg_val_loss = get_average(running_val_loss)
+        
+            # if less than 10% decrease
+            if avg_val_loss > self.percent * prev_val_loss:
+                if cnt > self.patience:
+                    break
+                else:
+                    cnt += 1
+            else:
+                cnt = 0  # reset
+                
+            prev_val_loss = avg_val_loss
+            
+            # restrict to moving average
+            while len(running_val_loss) > self.ma:
+                running_val_loss.pop(0)
+
+            # manual training stopper
+            if epoch % self.manual == 0 and epoch != 0:
+                cnt_train = input("Continue training? True or False: ")
+                if cnt_train != "True":
+                    break
+                    
+        print("Finished window, trained for %d epochs, loss: %.3f" % (epoch, avg_val_loss))
+        return avg_val_loss
 
 
 class Window:
@@ -294,3 +300,64 @@ class Window:
         self.trainloader = trainloader
         self.validationloader = validationloader
     
+
+class CoreDataset(Dataset):
+
+    def __init__(self, df: pd.DataFrame, lags: int, series):
+        # start from 1948
+        self.core: pd.DataFrame = df[["CPIAUCSL", "UNRATE", "A191RO1Q156NBEA"]].loc["1948-01-01":]
+        
+        X = get_lags(self.core, lags)
+        self.y = self.core[lags:][series].values
+        self.X = X[lags:].values
+        
+    def __getitem__(self, index):
+        return self.y[index], self.X[index]
+    
+    def __len__(self):
+        return len(self.y)
+    
+    def plot(self):
+        plt.plot(self.core)
+        plt.show()
+
+
+def evaluate_on_test(testloader: DataLoader, net: nn.Module, criterion: nn.MSELoss):
+    net.eval()
+    y_pred = []
+    y_act = []
+    running_test_loss = []
+    
+    for i, data in enumerate(testloader):
+        with torch.no_grad():
+            y, X = data
+            y, X = y.float(), X.float()
+            
+            loss = criterion(y, net(X))
+            running_test_loss.append(loss.item())
+        
+            y_pred.append(net(X).squeeze()[0].item())
+            y_act.append(y.squeeze()[0].item())
+        
+    plt.plot(y_pred)
+    plt.plot(y_act)
+    
+    return get_average(running_test_loss)
+
+
+def init_weights(m):
+    if type(m) == nn.Linear:
+        torch.nn.init.xavier_uniform(m.weight)
+
+
+# check if there is is null
+def remove_nan(df: pd.DataFrame) -> pd.DataFrame:
+
+    for series in df:
+        col = df[series]
+        if col.isna().value_counts().loc[False] < df.shape[0]:
+            print(series)
+            df = df.drop(columns=series)
+
+    return df
+            
