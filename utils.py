@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import pickle
 from torch.utils.data import Dataset, DataLoader, SequentialSampler, Subset
 
 def plot_var_forc(prior, forc, err_upper, err_lower,
@@ -321,6 +322,22 @@ class CoreDataset(Dataset):
         plt.plot(self.core)
         plt.show()
 
+class ExtendedDataset(CoreDataset):
+
+    def __init__(self, df, lags, series):
+        X = get_lags(df, lags)
+        self.y = df[lags:][series].values
+        self.X = X[lags:].values
+        
+class CoreDatasetMulti(CoreDataset):
+
+    def __init__(self, df, lags, series, steps):
+        self.core: pd.DataFrame = df[["CPIAUCSL", "UNRATE", "A191RO1Q156NBEA"]].loc["1948-01-01":]
+
+        X = get_lags(self.core, lags)
+        self.y = self.core[lags + steps:][series].values
+        self.X = X[lags:-steps].values
+
 
 def evaluate_on_test(testloader: DataLoader, net: nn.Module, criterion: nn.MSELoss):
     net.eval()
@@ -360,4 +377,14 @@ def remove_nan(df: pd.DataFrame) -> pd.DataFrame:
             df = df.drop(columns=series)
 
     return df
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
             
+def save_obj(obj, name ):
+    with open(name + '.pkl', 'wb') as f:
+        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
+
+def load_obj(name ):
+    with open(name + '.pkl', 'rb') as f:
+        return pickle.load(f)
