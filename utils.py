@@ -42,72 +42,6 @@ def plot_var_forc(prior, forc, err_upper, err_lower,
 #         ax.legend(**legend_options)
     return fig
 
-def ridge_regress(y, X):
-    # plot them first
-    plt.plot(y)
-    plt.show()
-    plt.plot(X)
-    plt.show()
-
-    from sklearn import linear_model
-
-    reg = linear_model.RidgeCV(alphas=np.logspace(-6, 6, 13))
-    reg.fit(X, y)
-
-    print("Alpha:")
-    print(reg.alpha_)
-    print("R squared:")
-    print(reg.score(X, y))
-
-    return reg
-
-def kernel_ridge(y, X, k):
-    # plot them first
-    plt.plot(y)
-    plt.show()
-    plt.plot(X)
-    plt.show()
-
-    from sklearn.kernel_ridge import KernelRidge
-
-    model = KernelRidge(kernel=k)
-    model.fit(X, y)
-
-    print("R squared:")
-    print(model.score(X, y))
-
-    return model
-
-
-# apparently unnecessary
-def rename_col(X, suffix):
-    assert isinstance(X, str), "suffix has to be of type str"
-
-    col_name = {}
-
-    for series in X:
-        col_name[series] = col_name + suffix
-
-    return X.rename(columns=col_name)
-
-# unused for now
-class RidgeAR:
-
-    def __init__(self, reg, y, X_lagged):
-        self.reg = reg
-        self.y = y
-        self.X_lagged = X_lagged
-
-    def forecast(self):
-        fitted_val = pd.Series(self.reg.predict(self.X_lagged),
-                      index = self.y.index)
-
-        plt.plot(self.y)
-        plt.plot(fitted_val)
-        plt.show()
-        
-        return fitted_val
-
 
 def which_fluc(data: pd.DataFrame, value: float):
     for series in data:
@@ -128,42 +62,6 @@ def get_lags(X, lags):
 
     return X_lagged
 
-
-def ridge_ar(y, X, lags):
-    assert isinstance(X, pd.DataFrame), "X has to be of type pd.DataFrame"
-
-    X_lagged = get_lags(X, lags)
-
-    # get rid of nans
-
-    y = y[lags:]
-    X_lagged = X_lagged[lags:]
-
-    print("Feature variable: ")
-    print(y.name)
-    print("Dimensions of lagged X: ")
-    print(X_lagged.shape)
-    print("Fitting regression...")
-
-    return ridge_regress(y, X_lagged)
-
-
-def kernel_ridge_ar(y, X, lags, kernel):
-
-    X_lagged = get_lags(X, lags)
-
-    # get rid of nans
-
-    y = y[lags:]
-    X_lagged = X_lagged[lags:]
-
-    print("Feature variable: ")
-    print(y.name)
-    print("Dimensions of lagged X: ")
-    print(X_lagged.shape)
-    print("Fitting regression...")
-
-    return kernel_ridge(y, X_lagged, kernel)
     
 def is_outlier(points, thresh=3.5):
     # https://stackoverflow.com/questions/11882393/matplotlib-disregard-outliers-when-plotting
@@ -335,14 +233,14 @@ class CoreDatasetMulti(CoreDataset):
         self.core: pd.DataFrame = df[["CPIAUCSL", "UNRATE", "A191RO1Q156NBEA"]].loc["1948-01-01":]
 
         X = get_lags(self.core, lags)
-        self.y = self.core[lags + steps:][series].values
-        self.X = X[lags:-steps].values
+        # should be steps - 1...
+        self.y = self.core[lags + steps - 1:][series].values
+        self.X = X[lags:].values
 
 
 def evaluate_on_test(testloader: DataLoader, net: nn.Module, criterion: nn.MSELoss):
     net.eval()
     y_pred = []
-    y_act = []
     running_test_loss = []
     
     for i, data in enumerate(testloader):
@@ -353,13 +251,9 @@ def evaluate_on_test(testloader: DataLoader, net: nn.Module, criterion: nn.MSELo
             loss = criterion(y, net(X))
             running_test_loss.append(loss.item())
         
-            y_pred.append(net(X).squeeze()[0].item())
-            y_act.append(y.squeeze()[0].item())
-        
-    plt.plot(y_pred)
-    plt.plot(y_act)
+            y_pred.append(net(X).squeeze().numpy())
     
-    return get_average(running_test_loss)
+    return y_pred, get_average(running_test_loss)
 
 
 def init_weights(m):
